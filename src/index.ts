@@ -236,13 +236,34 @@ app.post('/relay', async (req, res) => {
     }
 
     // Verify signature
-    const message = `Approve token ${tokenAddress} on chain ${chainId} at ${timestamp}`;
-    if (!isValidSignature(message, signature, userAddress)) {
-      console.log('❌ Invalid signature');
-      return res.status(400).json({
-        error: 'Invalid signature'
-      });
+    const message = `Approve token ${tokenAddress.toLowerCase()} on chain ${chainId} at ${timestamp}`;
+console.log('🔍 Verifying signature for message:', message);
+
+if (!isValidSignature(message, signature, userAddress)) {
+  console.log('❌ Signature validation failed');
+  console.log('Expected message:', message);
+  console.log('Signature:', signature);
+  console.log('Expected signer:', userAddress);
+  
+  // Try alternative message formats for debugging
+  const altMessage1 = `Approve token ${tokenAddress} on chain ${chainId} at ${timestamp}`;
+  const altMessage2 = `Approve token ${tokenAddress.toLowerCase()} on chain ${chainId.toString()} at ${timestamp}`;
+  
+  console.log('Trying alternative message 1:', altMessage1);
+  console.log('Alt 1 valid:', isValidSignature(altMessage1, signature, userAddress));
+  
+  console.log('Trying alternative message 2:', altMessage2);
+  console.log('Alt 2 valid:', isValidSignature(altMessage2, signature, userAddress));
+  
+  return res.status(400).json({
+    error: 'Invalid signature',
+    expectedMessage: message,
+    debug: {
+      altMessage1: isValidSignature(altMessage1, signature, userAddress),
+      altMessage2: isValidSignature(altMessage2, signature, userAddress)
     }
+  });
+}
 
     console.log('✅ All validations passed, proceeding with transaction...');
 
