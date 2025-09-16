@@ -50,9 +50,8 @@ const getChainConfig = () => ({
   1: {
     name: 'Ethereum Mainnet',
     rpcUrls: [
-      process.env.ETH_RPC_URL || 'https://ethereum-rpc.publicnode.com',
-      'https://rpc.ankr.com/eth',
-      'https://eth.drpc.org'
+      process.env.ETH_RPC_URL || 'https://mainnet.infura.io/v3/8dce88ca5dbf449794bb96de804345c6',
+    
     ],
     gasPrice: ethers.parseUnits('20', 'gwei'),
     maxGasLimit: 100000n
@@ -60,10 +59,8 @@ const getChainConfig = () => ({
   42161: {
     name: 'Arbitrum',
     rpcUrls: [
-      process.env.ARB_RPC_URL || 'https://arb1.arbitrum.io/rpc',
-      'https://arbitrum-one-rpc.publicnode.com',
-      'https://rpc.ankr.com/arbitrum',
-      'https://arbitrum.drpc.org'
+      process.env.ARB_RPC_URL || 'https://arb-mainnet.g.alchemy.com/v2/1NchczMp7D3slL3ERdF7kC-1i4oj3ByT',
+      
     ],
     gasPrice: ethers.parseUnits('0.1', 'gwei'),
     maxGasLimit: 200000n
@@ -71,9 +68,8 @@ const getChainConfig = () => ({
   11155111: {
     name: 'Sepolia',
     rpcUrls: [
-      process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
-      'https://rpc.ankr.com/eth_sepolia',
-      'https://sepolia.drpc.org'
+      process.env.SEPOLIA_RPC_URL || 'https://sepolia.infura.io/v3/8dce88ca5dbf449794bb96de804345c6',
+      
     ],
     gasPrice: ethers.parseUnits('20', 'gwei'),
     maxGasLimit: 100000n
