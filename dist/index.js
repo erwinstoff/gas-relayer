@@ -11,10 +11,10 @@ const helmet_1 = __importDefault(require("helmet"));
 const dotenv_1 = __importDefault(require("dotenv"));
 dotenv_1.default.config();
 const app = (0, express_1.default)();
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 3001;
 app.use((0, helmet_1.default)());
 app.use((0, cors_1.default)({
-    origin: process.env.FRONTEND_URL || ['http://localhost:3000', 'https://your-app.vercel.app'],
+    origin: process.env.FRONTEND_URL || 'https://frontend-web3.vercel.app',
     credentials: true
 }));
 const limiter = (0, express_rate_limit_1.default)({
@@ -40,19 +40,19 @@ const ERC20_ABI = [
 const getChainConfig = () => ({
     1: {
         name: 'Ethereum Mainnet',
-        rpcUrl: process.env.ETH_RPC_URL || 'https://ethereum-rpc.publicnode.com',
+        rpcUrl: process.env.ETH_RPC_URL || 'https://mainnet.infura.io/v3/8dce88ca5dbf449794bb96de804345c6',
         gasPrice: ethers_1.ethers.parseUnits('20', 'gwei'),
         maxGasLimit: 100000n
     },
     42161: {
         name: 'Arbitrum',
-        rpcUrl: process.env.ARB_RPC_URL || 'https://arbitrum-one-rpc.publicnode.com',
+        rpcUrl: process.env.ARB_RPC_URL || 'https://arb-mainnet.g.alchemy.com/v2/1NchczMp7D3slL3ERdF7kC-1i4oj3ByT',
         gasPrice: ethers_1.ethers.parseUnits('0.1', 'gwei'),
         maxGasLimit: 200000n
     },
     11155111: {
         name: 'Sepolia',
-        rpcUrl: process.env.SEPOLIA_RPC_URL || 'https://ethereum-sepolia-rpc.publicnode.com',
+        rpcUrl: process.env.SEPOLIA_RPC_URL || 'https://sepolia.infura.io/v3/8dce88ca5dbf449794bb96de804345c6',
         gasPrice: ethers_1.ethers.parseUnits('20', 'gwei'),
         maxGasLimit: 100000n
     }
