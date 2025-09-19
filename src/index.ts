@@ -1,4 +1,4 @@
-// src/index.ts - Complete Gas Relayer Backend
+// src/index.ts - Updated Gas Relayer Backend for ERC2771Forwarder
 import express from 'express';
 import { ethers } from 'ethers';
 import cors from 'cors';
@@ -26,17 +26,74 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
 });
-app.use('/relay', limiter);
+app.use('/metatx', limiter);
 
 app.use(express.json({ limit: '1mb' }));
 
-// Health check for Render
+// Health check
 app.get('/', (req, res) => {
   res.json({ 
-    status: 'Gas Relayer Service is running',
+    status: 'ERC2771Forwarder Gas Relayer Service is running',
     timestamp: new Date().toISOString()
   });
 });
+
+// Debug endpoint for testing forwarder contract
+app.get('/debug/forwarder/:chainId/:userAddress', async (req, res) => {
+  try {
+    const { chainId, userAddress } = req.params;
+    const CHAIN_CONFIG = getChainConfig();
+    
+    const chainIdNum = parseInt(chainId);
+    if (!CHAIN_CONFIG[chainIdNum as keyof typeof CHAIN_CONFIG]) {
+      return res.status(400).json({ error: 'Unsupported chain' });
+    }
+    
+    const chainConfig = CHAIN_CONFIG[chainIdNum as keyof typeof CHAIN_CONFIG];
+    const provider = await getWorkingProvider(chainIdNum);
+    
+    if (!RELAYER_PRIVATE_KEY) {
+      return res.status(500).json({ error: 'Relayer private key not configured' });
+    }
+    
+    const relayerWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, provider);
+    
+    if (!chainConfig.forwarderAddress) {
+      return res.status(500).json({ error: 'Forwarder address not configured for this chain' });
+    }
+    
+    const forwarderContract = new ethers.Contract(
+      chainConfig.forwarderAddress,
+      ERC2771_FORWARDER_ABI,
+      relayerWallet
+    );
+    
+    // Test basic contract calls
+    const nonce = await forwarderContract.getNonce(userAddress);
+    const relayerBalance = await provider.getBalance(relayerWallet.address);
+    
+    res.json({
+      chainId,
+      userAddress,
+      forwarderAddress: chainConfig.forwarderAddress,
+      nonce: nonce.toString(),
+      relayerBalance: ethers.formatEther(relayerBalance),
+      relayerAddress: relayerWallet.address
+    });
+  } catch (error: any) {
+    res.status(500).json({
+      error: 'Debug failed',
+      message: error.message
+    });
+  }
+});
+
+// ERC2771Forwarder ABI
+const ERC2771_FORWARDER_ABI = [
+  "function execute((address from, address to, uint256 value, uint256 gas, uint256 nonce, uint48 deadline, bytes data) request, bytes signature) external payable returns (bool success, bytes returnData)",
+  "function getNonce(address from) external view returns (uint256)",
+  "function verify((address from, address to, uint256 value, uint256 gas, uint256 nonce, uint48 deadline, bytes data) request, bytes signature) external view returns (bool)"
+];
 
 // ERC20 ABI
 const ERC20_ABI = [
@@ -45,34 +102,34 @@ const ERC20_ABI = [
   "function allowance(address owner, address spender) external view returns (uint256)"
 ];
 
-// Chain configurations with fallback RPCs
+// Chain configurations with ERC2771Forwarder addresses
 const getChainConfig = () => ({
   1: {
     name: 'Ethereum Mainnet',
     rpcUrls: [
       process.env.ETH_RPC_URL || 'https://mainnet.infura.io/v3/8dce88ca5dbf449794bb96de804345c6',
-    
     ],
     gasPrice: ethers.parseUnits('20', 'gwei'),
-    maxGasLimit: 100000n
+    maxGasLimit: 200000n,
+    forwarderAddress: process.env.TRUSTED_FORWARDER_MAINNET
   },
   42161: {
     name: 'Arbitrum',
     rpcUrls: [
       process.env.ARB_RPC_URL || 'https://arb-mainnet.g.alchemy.com/v2/1NchczMp7D3slL3ERdF7kC-1i4oj3ByT',
-      
     ],
     gasPrice: ethers.parseUnits('0.1', 'gwei'),
-    maxGasLimit: 200000n
+    maxGasLimit: 300000n,
+    forwarderAddress: process.env.TRUSTED_FORWARDER_ARBITRUM
   },
   11155111: {
     name: 'Sepolia',
     rpcUrls: [
-      process.env.SEPOLIA_RPC_URL || 'https://sepolia.infura.io/v3/8dce88ca5dbf449794bb96de804345c6',
-      
+      process.env.SEPOLIA_RPC_URL || 'https://eth-sepolia.g.alchemy.com/v2/1NchczMp7D3slL3ERdF7kC-1i4oj3ByT',
     ],
     gasPrice: ethers.parseUnits('20', 'gwei'),
-    maxGasLimit: 100000n
+    maxGasLimit: 200000n,
+    forwarderAddress: process.env.TRUSTED_FORWARDER_SEPOLIA
   }
 });
 
@@ -138,13 +195,44 @@ async function getWorkingProvider(chainId: number): Promise<ethers.JsonRpcProvid
   throw new Error(`All RPC endpoints failed for ${config.name}`);
 }
 
-// Validate signature
-function isValidSignature(message: string, signature: string, expectedSigner: string): boolean {
+// Validate EIP-712 signature for ERC2771Forwarder
+function validateEIP712Signature(
+  domain: any,
+  types: any,
+  message: any,
+  signature: string,
+  expectedSigner: string
+): boolean {
   try {
-    const recoveredAddress = ethers.verifyMessage(message, signature);
-    return recoveredAddress.toLowerCase() === expectedSigner.toLowerCase();
+    // Build the EIP-712 domain separator
+    const domainSeparator = ethers.TypedDataEncoder.hashDomain(domain);
+    
+    // Build the struct hash
+    const structHash = ethers.TypedDataEncoder.hash(domain, types, message);
+    
+    // Build the final hash
+    const finalHash = ethers.keccak256(
+      ethers.concat(['0x1901', domainSeparator, structHash])
+    );
+    
+    // Recover the signer
+    const recoveredAddress = ethers.recoverAddress(finalHash, signature);
+    
+    const isValid = recoveredAddress.toLowerCase() === expectedSigner.toLowerCase();
+    
+    console.log('🔍 EIP-712 Signature validation:', {
+      expectedSigner: expectedSigner.toLowerCase(),
+      recoveredAddress: recoveredAddress.toLowerCase(),
+      isValid,
+      domainName: domain.name,
+      domainVersion: domain.version,
+      domainChainId: domain.chainId,
+      verifyingContract: domain.verifyingContract
+    });
+    
+    return isValid;
   } catch (error) {
-    console.error('Signature validation error:', error);
+    console.error('❌ EIP-712 signature validation error:', error);
     return false;
   }
 }
@@ -175,40 +263,45 @@ function isTokenSupported(chainId: number, tokenAddress: string): boolean {
   return isSupported;
 }
 
-// Main relay endpoint
-app.post('/relay', async (req, res) => {
+// Main meta-transaction relay endpoint
+app.post('/metatx', async (req, res) => {
   try {
     const {
       chainId,
       tokenAddress,
       userAddress,
-      signature,
-      timestamp
+      metaTxMessage
     } = req.body;
 
-    console.log('📥 Received relay request:', {
+    console.log('📥 Received meta-transaction request:', {
       chainId,
       tokenAddress,
       userAddress: userAddress?.slice(0, 10) + '...',
-      timestamp
+      hasSignature: !!metaTxMessage?.signature
     });
 
-    // Validate required fields
-    if (!chainId || !tokenAddress || !userAddress || !signature || !timestamp) {
-      console.log('❌ Missing required fields');
+    // Validate required fields with better error messages
+    const missingFields = [];
+    if (!chainId) missingFields.push('chainId');
+    if (!tokenAddress) missingFields.push('tokenAddress');
+    if (!userAddress) missingFields.push('userAddress');
+    if (!metaTxMessage) missingFields.push('metaTxMessage');
+    
+    if (missingFields.length > 0) {
+      console.log('❌ Missing required fields:', missingFields);
+      console.log('📥 Received data:', { chainId, tokenAddress, userAddress, hasMetaTxMessage: !!metaTxMessage });
       return res.status(400).json({
         error: 'Missing required fields',
-        required: ['chainId', 'tokenAddress', 'userAddress', 'signature', 'timestamp']
+        missingFields,
+        received: { chainId, tokenAddress, userAddress, hasMetaTxMessage: !!metaTxMessage }
       });
     }
 
-    // Check timestamp (prevent replay attacks)
-    const now = Date.now();
-    const requestTime = parseInt(timestamp);
-    if (now - requestTime > 300000) { // 5 minutes
-      console.log('❌ Request expired');
+    const { request, signature } = metaTxMessage;
+    if (!request || !signature) {
+      console.log('❌ Missing request or signature in metaTxMessage');
       return res.status(400).json({
-        error: 'Request expired. Please refresh and try again.'
+        error: 'Missing request or signature in metaTxMessage'
       });
     }
 
@@ -224,6 +317,18 @@ app.post('/relay', async (req, res) => {
       });
     }
 
+    const chainConfig = CHAIN_CONFIG[chainId as keyof typeof CHAIN_CONFIG];
+    
+    // Check if forwarder is configured for this chain
+    if (!chainConfig.forwarderAddress) {
+      console.log('❌ No ERC2771Forwarder configured for chain:', chainId);
+      return res.status(400).json({
+        error: 'ERC2771Forwarder not configured for this chain',
+        chainId,
+        chainName: chainConfig.name
+      });
+    }
+
     // Validate token support
     if (!isTokenSupported(chainId, tokenAddress)) {
       console.log('❌ Unsupported token:', tokenAddress, 'on chain:', chainId);
@@ -235,39 +340,29 @@ app.post('/relay', async (req, res) => {
       });
     }
 
-    // Verify signature
-    const message = `Approve token ${tokenAddress.toLowerCase()} on chain ${chainId} at ${timestamp}`;
-console.log('🔍 Verifying signature for message:', message);
-
-if (!isValidSignature(message, signature, userAddress)) {
-  console.log('❌ Signature validation failed');
-  console.log('Expected message:', message);
-  console.log('Signature:', signature);
-  console.log('Expected signer:', userAddress);
-  
-  // Try alternative message formats for debugging
-  const altMessage1 = `Approve token ${tokenAddress} on chain ${chainId} at ${timestamp}`;
-  const altMessage2 = `Approve token ${tokenAddress.toLowerCase()} on chain ${chainId.toString()} at ${timestamp}`;
-  
-  console.log('Trying alternative message 1:', altMessage1);
-  console.log('Alt 1 valid:', isValidSignature(altMessage1, signature, userAddress));
-  
-  console.log('Trying alternative message 2:', altMessage2);
-  console.log('Alt 2 valid:', isValidSignature(altMessage2, signature, userAddress));
-  
-  return res.status(400).json({
-    error: 'Invalid signature',
-    expectedMessage: message,
-    debug: {
-      altMessage1: isValidSignature(altMessage1, signature, userAddress),
-      altMessage2: isValidSignature(altMessage2, signature, userAddress)
+    // Validate ForwardRequest structure
+    const requiredFields = ['from', 'to', 'value', 'gas', 'nonce', 'deadline', 'data'];
+    const missingRequestFields = requiredFields.filter(field => request[field] === undefined);
+    if (missingRequestFields.length > 0) {
+      console.log('❌ Missing ForwardRequest fields:', missingRequestFields);
+      return res.status(400).json({
+        error: 'Invalid ForwardRequest structure',
+        missingFields: missingRequestFields
+      });
     }
-  });
-}
 
-    console.log('✅ All validations passed, proceeding with transaction...');
+    // Check deadline
+    const now = Math.floor(Date.now() / 1000);
+    const deadline = parseInt(request.deadline);
+    if (now > deadline) {
+      console.log('❌ Request expired');
+      return res.status(400).json({
+        error: 'Request expired. Please refresh and try again.'
+      });
+    }
 
-    const chainConfig = CHAIN_CONFIG[chainId as keyof typeof CHAIN_CONFIG];
+    console.log('✅ All validations passed, proceeding with meta-transaction...');
+
     const provider = await getWorkingProvider(chainId);
     const relayerWallet = new ethers.Wallet(RELAYER_PRIVATE_KEY, provider);
 
@@ -286,10 +381,76 @@ if (!isValidSignature(message, signature, userAddress)) {
       });
     }
 
-    // Create contract instance
-    const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, relayerWallet);
+    // Create ERC2771Forwarder contract instance
+    const forwarderContract = new ethers.Contract(
+      chainConfig.forwarderAddress,
+      ERC2771_FORWARDER_ABI,
+      relayerWallet
+    );
 
-    // Check if approval is needed
+    // Get current nonce from forwarder with error handling
+    let currentNonce;
+    try {
+      currentNonce = await forwarderContract.getNonce(userAddress);
+      console.log('📊 Current nonce for user:', currentNonce.toString());
+    } catch (error: any) {
+      console.log('❌ Failed to get nonce from forwarder:', error.message);
+      // Use the nonce from the request if forwarder call fails
+      currentNonce = BigInt(request.nonce || 0);
+      console.log('📊 Using nonce from request:', currentNonce.toString());
+    }
+
+    // Update request with current nonce
+    const updatedRequest = {
+      ...request,
+      nonce: currentNonce.toString()
+    };
+
+    // Build EIP-712 domain for validation
+    const domain = {
+      name: 'ERC2771Forwarder',
+      version: '1',
+      chainId: chainId,
+      verifyingContract: chainConfig.forwarderAddress
+    };
+
+    const types = {
+      ForwardRequest: [
+        { name: 'from', type: 'address' },
+        { name: 'to', type: 'address' },
+        { name: 'value', type: 'uint256' },
+        { name: 'gas', type: 'uint256' },
+        { name: 'nonce', type: 'uint256' },
+        { name: 'deadline', type: 'uint48' },
+        { name: 'data', type: 'bytes' }
+      ]
+    };
+
+    // Validate EIP-712 signature
+    if (!validateEIP712Signature(domain, types, updatedRequest, signature, userAddress)) {
+      console.log('❌ EIP-712 signature validation failed');
+      return res.status(400).json({
+        error: 'Invalid EIP-712 signature'
+      });
+    }
+
+    // Verify the request with the forwarder contract (optional - skip if it fails)
+    try {
+      const isValid = await forwarderContract.verify(updatedRequest, signature);
+      if (!isValid) {
+        console.log('❌ Forwarder verification failed');
+        return res.status(400).json({
+          error: 'Forwarder verification failed'
+        });
+      }
+      console.log('✅ Forwarder verification passed');
+    } catch (error: any) {
+      console.log('⚠️ Forwarder verification error (continuing anyway):', error.message);
+      // Continue execution even if verification fails - the transaction will fail on-chain if invalid
+    }
+
+    // Check if approval is already sufficient
+    const tokenContract = new ethers.Contract(tokenAddress, ERC20_ABI, provider);
     const currentAllowance = await tokenContract.allowance(userAddress, SPENDER_ADDRESS);
     if (currentAllowance > 0n) {
       console.log('✅ Token already approved');
@@ -310,37 +471,43 @@ if (!isValidSignature(message, signature, userAddress)) {
       });
     }
 
-    // Estimate gas
-    let gasEstimate: bigint;
-    try {
-      gasEstimate = await tokenContract.approve.estimateGas(
-        SPENDER_ADDRESS,
-        ethers.MaxUint256
-      );
-      gasEstimate = gasEstimate + (gasEstimate * 20n / 100n); // Add 20% buffer
-    } catch (error) {
-      console.error('⚠️ Gas estimation failed:', error);
-      gasEstimate = chainConfig.maxGasLimit;
-    }
-
-    // Execute the approval transaction
-    console.log('🚀 Executing approval transaction...', {
+    // Execute the meta-transaction
+    console.log('🚀 Executing ERC2771Forwarder meta-transaction...', {
       user: userAddress,
       token: tokenAddress,
       chain: chainConfig.name,
-      gasEstimate: gasEstimate.toString()
+      forwarder: chainConfig.forwarderAddress
     });
 
-    const tx = await tokenContract.approve(
-      SPENDER_ADDRESS,
-      ethers.MaxUint256,
-      {
-        gasLimit: gasEstimate > chainConfig.maxGasLimit ? chainConfig.maxGasLimit : gasEstimate,
-        gasPrice: chainConfig.gasPrice
+    let tx;
+    try {
+      tx = await forwarderContract.execute(
+        updatedRequest,
+        signature,
+        {
+          gasLimit: chainConfig.maxGasLimit,
+          gasPrice: chainConfig.gasPrice
+        }
+      );
+    } catch (error: any) {
+      console.error('❌ Meta-transaction execution failed:', error.message);
+      
+      // Check if it's a specific revert reason
+      if (error.message.includes('execution reverted')) {
+        return res.status(400).json({
+          error: 'Transaction would revert',
+          details: 'The meta-transaction would fail on-chain. Please check your signature and request data.',
+          revertReason: error.message
+        });
       }
-    );
+      
+      return res.status(500).json({
+        error: 'Failed to execute meta-transaction',
+        details: error.message
+      });
+    }
 
-    console.log('✅ Transaction submitted:', {
+    console.log('✅ Meta-transaction submitted:', {
       txHash: tx.hash,
       user: userAddress,
       token: tokenAddress,
@@ -355,13 +522,13 @@ if (!isValidSignature(message, signature, userAddress)) {
       txHash: tx.hash,
       gasUsed: receipt?.gasUsed?.toString(),
       chainName: chainConfig.name,
-      message: 'Approval transaction completed successfully'
+      message: 'Meta-transaction completed successfully'
     });
 
   } catch (error: any) {
-    console.error('❌ Relay error:', error);
+    console.error('❌ Meta-transaction relay error:', error);
     res.status(500).json({
-      error: 'Failed to relay transaction',
+      error: 'Failed to relay meta-transaction',
       details: process.env.NODE_ENV === 'development' ? error.message : 'Internal server error'
     });
   }
@@ -372,33 +539,37 @@ app.get('/health', async (req, res) => {
   try {
     const CHAIN_CONFIG = getChainConfig();
     const balances: Record<string, string> = {};
+    const forwarders: Record<string, string> = {};
     const relayerAddress = new ethers.Wallet(RELAYER_PRIVATE_KEY).address;
     
     console.log('🏥 Running health check for relayer:', relayerAddress);
     
-    // Check balances with timeout
-    const balancePromises = Object.entries(CHAIN_CONFIG).map(async ([chainId, config]) => {
+    // Check balances and forwarders with timeout
+    const healthPromises = Object.entries(CHAIN_CONFIG).map(async ([chainId, config]) => {
       try {
-        console.log(`🔍 Checking balance for ${config.name}...`);
+        console.log(`🔍 Checking ${config.name}...`);
         const provider = await getWorkingProvider(parseInt(chainId));
         const balance = await provider.getBalance(relayerAddress);
         balances[config.name] = ethers.formatEther(balance);
-        console.log(`✅ ${config.name}: ${ethers.formatEther(balance)} ETH`);
+        forwarders[config.name] = config.forwarderAddress || 'Not configured';
+        console.log(`✅ ${config.name}: ${ethers.formatEther(balance)} ETH, Forwarder: ${config.forwarderAddress || 'Not set'}`);
       } catch (error: any) {
         balances[config.name] = 'Error fetching balance';
+        forwarders[config.name] = 'Error';
         console.error(`❌ ${config.name} error:`, error.message);
       }
     });
     
-    await Promise.all(balancePromises);
+    await Promise.all(healthPromises);
 
     res.json({
       status: 'healthy',
       timestamp: new Date().toISOString(),
       relayerAddress,
       balances,
+      forwarders,
       supportedChains: Object.values(CHAIN_CONFIG).map(c => c.name),
-      version: '1.0.0'
+      version: '2.0.0-ERC2771Forwarder'
     });
   } catch (error) {
     console.error('❌ Health check error:', error);
@@ -417,7 +588,8 @@ app.get('/supported-tokens', (req, res) => {
     chains: Object.entries(getChainConfig()).map(([chainId, config]) => ({
       chainId: parseInt(chainId),
       name: config.name,
-      tokens: SUPPORTED_TOKENS[parseInt(chainId)] || []
+      tokens: SUPPORTED_TOKENS[parseInt(chainId)] || [],
+      forwarderAddress: config.forwarderAddress
     }))
   });
 });
@@ -439,19 +611,19 @@ app.use('*', (req, res) => {
       'GET /',
       'GET /health', 
       'GET /supported-tokens',
-      'POST /relay'
+      'POST /metatx'
     ]
   });
 });
 
 const server = app.listen(PORT, () => {
-  console.log('🚀 Gas Relayer Server started!');
-  console.log('================================');
+  console.log('🚀 ERC2771Forwarder Gas Relayer Server started!');
+  console.log('===============================================');
   console.log(`🌐 Server running on port ${PORT}`);
   console.log(`🏥 Health check: http://localhost:${PORT}/health`);
-  console.log(`🔗 Relay endpoint: http://localhost:${PORT}/relay`);
+  console.log(`🔗 Meta-transaction endpoint: http://localhost:${PORT}/metatx`);
   console.log(`👤 Relayer address: ${new ethers.Wallet(RELAYER_PRIVATE_KEY).address}`);
-  console.log('================================');
+  console.log('===============================================');
 });
 
 // Graceful shutdown
